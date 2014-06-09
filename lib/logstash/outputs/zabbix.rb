@@ -2,6 +2,7 @@
 require "logstash/namespace"
 require "logstash/outputs/base"
 require "shellwords"
+require "logstash/outputs/zabbix/zabbix_send"
 
 # The zabbix output is used for sending item data to zabbix via the
 # zabbix_sender executable.
@@ -68,7 +69,6 @@ class LogStash::Outputs::Zabbix < LogStash::Outputs::Base
 
   config :host, :validate => :string, :default => "localhost"
   config :port, :validate => :number, :default => 10051
-  config :zabbix_sender, :validate => :path, :default => "/usr/local/bin/zabbix_sender"
 
   public
   def register
@@ -78,12 +78,6 @@ class LogStash::Outputs::Zabbix < LogStash::Outputs::Base
   public
   def receive(event)
     return unless output?(event)
-
-    if !File.exists?(@zabbix_sender)
-      @logger.warn("Skipping zabbix output; zabbix_sender file is missing",
-                   :zabbix_sender => @zabbix_sender, :missed_event => event)
-      return
-    end
 
     host = event["zabbix_host"]
     if !host
@@ -118,41 +112,10 @@ class LogStash::Outputs::Zabbix < LogStash::Outputs::Base
                        :event => event,
                        :exception => e, :backtrace => e.backtrace)
         end
+        
+        sender = ZabbixSend::Sender.new
+        sender.zabbix_send("#{@host}","#{host[index]}","#{item[index]}","#{zmsg}", Time.now.to_i, "#{@port}")
 
-        cmd = "#{@zabbix_sender} -z #{@host} -p #{@port} -s #{host[index]} -k #{item[index]} -o \"#{zmsg}\" -v"
-
-        @logger.debug("Running zabbix command", :command => cmd)
-
-        begin
-          f = IO.popen(cmd, "a+")
-          f.close_write unless f.closed?
-
-          command_output = f.gets
-          command_processed = command_output[/processed: (\d+)/,1]
-          command_failed = command_output[/failed: (\d+)/,1]
-          command_total = command_output[/total: (\d+)/,1]
-          command_seconds_spent = command_output[/seconds spent: ([\d\.]+)/,1]
-
-          @logger.info("Message was sent to zabbix server",
-                       :command => cmd, :event => event,
-                       :command_processed => command_processed,
-                       :command_failed => command_failed,
-                       :command_total => command_total,
-                       :command_seconds_spent => command_seconds_spent)
-        rescue => e
-          @logger.warn("Skipping zabbix output; error calling zabbix_sender",
-                       :command => cmd, :missed_event => event,
-                       :exception => e, :backtrace => e.backtrace)
-        ensure
-          begin
-            @logger.debug("Checking zabbix_sender command closing status", 
-                         :event => event, :command_status => f.closed?)
-            f.close unless f.closed?
-          rescue => e
-            @logger.warn("Error during closing zabbix_sender subprocess",
-                       :exception => e, :backtrace => e.backtrace)
-          end
-        end
       end
     else
       @logger.warn("Skipping zabbix output; some issues with zabbix parameters conversion",
